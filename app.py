@@ -1,18 +1,21 @@
-from fastapi import FastAPI, Response
+from fastapi import FastAPI, Query
+from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import os
+import csv
+import io
 
-# Импорт твоей функции из парсера
-from parser import run_parser   # Если такой функции нет — мы её добавим на следующем шаге
+from parser import run_parser   # ВАЖНО: теперь run_parser ожидает query
+
 
 app = FastAPI(
     title="TikTok Parser API",
     description="API для запуска TikTok-парсера",
-    version="1.0.0"
+    version="1.1.0"
 )
 
-# Разрешаем запросы откуда угодно (Google Sheets, браузер, и т.д.)
+# CORS для Google Sheets, браузера, Notion и т.д.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -21,56 +24,72 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 @app.get("/")
 def root():
-    return {"status": "ok", "message": "TikTok Parser API работает. Используйте /run"}
+    return {"status": "ok", "message": "TikTok Parser API работает. Используйте /run?query=слово"}
 
+
+# -------------------------------
+#       JSON endpoint
+# -------------------------------
 @app.get("/run")
-def run():
+def run(query: str = Query(..., description="Поисковый запрос TikTok")):
     """
-    Запускает парсер и возвращает JSON.
+    Возвращает JSON данные
     """
     try:
-        data = run_parser()
+        data = run_parser(query)
         return {"status": "success", "count": len(data), "data": data}
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
-@app.get("/run_csv")
-def run_csv():
+
+# -------------------------------
+#       CSV endpoint
+# -------------------------------
+@app.get("/csv")
+def run_csv(query: str = Query(..., description="Поисковый запрос TikTok")):
     """
-    Запускает парсер и возвращает CSV как файл.
+    Возвращает CSV файл
     """
     try:
-        data = run_parser()
-        if not data:
-            return Response("empty", media_type="text/plain")
+        data = run_parser(query)
 
-        # Формируем CSV
-        header = "url,description,views,likes,date,hashtags\n"
-        rows = []
+        # Создаём CSV в памяти
+        output = io.StringIO()
+        writer = csv.writer(output)
 
+        # Заголовки
+        writer.writerow(["url", "description", "views", "likes", "date", "hashtags", "author"])
+
+        # Данные
         for item in data:
-            row = [
+            writer.writerow([
                 item.get("url", ""),
                 item.get("description", "").replace(",", " "),
-                str(item.get("views", "")),
-                str(item.get("likes", "")),
+                item.get("views", 0),
+                item.get("likes", 0),
                 item.get("date", ""),
-                " ".join(item.get("hashtags", [])),
-            ]
-            rows.append(",".join(row))
+                item.get("hashtags", ""),
+                item.get("author", "")
+            ])
 
-        csv_data = header + "\n".join(rows)
+        output.seek(0)
 
-        return Response(
-            content=csv_data,
+        return StreamingResponse(
+            output,
             media_type="text/csv",
-            headers={"Content-Disposition": "attachment; filename=result.csv"}
+            headers={"Content-Disposition": f"attachment; filename=result_{query}.csv"}
         )
 
     except Exception as e:
-        return {"status": "error", "message": str(e)}
+        return JSONResponse(status_code=500, content={"status": "error", "message": str(e)})
 
+
+
+# -------------------------------
+#       Local run
+# -------------------------------
 if __name__ == "__main__":
     uvicorn.run("app:app", host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
