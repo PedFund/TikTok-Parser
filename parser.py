@@ -104,4 +104,3 @@ def run_parser(query: str) -> List[Dict]:
     except Exception as e:
         print("❌ Ошибка run_parser:", e)
         return []
-
