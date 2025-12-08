@@ -380,7 +380,32 @@ def main():
         import traceback
         traceback.print_exc()
 
+def run_parser() -> List[Dict]:
+    """
+    Обёртка для API: запускает парсер и возвращает список видео.
+    Никаких print, никаких файлов — только данные.
+    """
+    parser = TikTokParser()
+
+    try:
+        # Инициализация API
+        parser.initialize_api()
+
+        # Сбор видео
+        videos = parser.collect_videos()
+
+        # Преобразуем строки хештегов в список (для JSON-API)
+        for v in videos:
+            if isinstance(v.get("hashtags"), str):
+                v["hashtags"] = [tag.strip() for tag in v["hashtags"].split(",") if tag.strip()]
+
+        return videos
+
+    except Exception as e:
+        print(f"❌ Ошибка в run_parser(): {e}")
+        return []
 
 if __name__ == "__main__":
     main()
+
 
