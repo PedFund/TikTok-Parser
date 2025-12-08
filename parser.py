@@ -1,148 +1,107 @@
 import asyncio
-import csv
-import re
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import List, Dict
 
 from TikTokApi import TikTokApi
 
 
-class TikTokParser:
-    """Парсер TikTok под TikTokApi 7.x"""
-
-    def __init__(self):
-        self.api = TikTokApi()
-        self.session = None
-
-    # ---------------------------
-    # ИНИЦИАЛИЗАЦИЯ
-    # ---------------------------
-    async def init(self):
-        """Запускает API с сессией"""
-        self.session = await self.api.create_sessions(ms_token="", num_sessions=1)
-
-    # ---------------------------
-    # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
-    # ---------------------------
-    @staticmethod
-    def extract_hashtags(text: str) -> List[str]:
-        if not text:
-            return []
-        return re.findall(r"#\w+", text)
-
-    @staticmethod
-    def within_7_days(ts: int) -> bool:
-        if not ts:
-            return False
-        dt = datetime.fromtimestamp(ts)
-        return dt >= datetime.now() - timedelta(days=7)
-
-    # ---------------------------
-    # НОВЫЙ ПОИСК (РАБОТАЕТ)
-    # ---------------------------
-    async def search(self, query: str, limit: int = 40) -> List[Dict]:
-        """Рабочий поиск через новый search().videos()"""
-
-        results = []
-        print(f"🔍 Поиск TikTok по запросу: {query}")
-
-        try:
-            # Ключевой метод TikTokApi 7.x!
-            async for video in self.api.search().videos(query, count=limit):
-                data = self.convert(video)
-                if data:
-                    results.append(data)
-                if len(results) >= limit:
-                    break
-
-        except Exception as e:
-            print(f"❌ Ошибка поиска: {e}")
-
-        return results
-
-    # ---------------------------
-    # ПАРСИНГ ВИДЕО
-    # ---------------------------
-    def convert(self, video) -> Dict:
-        """Приводит видео в dict"""
-
-        try:
-            vid = getattr(video, "id", None)
-            if not vid:
-                return None
-
-            author = getattr(video, "author", None)
-            username = getattr(author, "unique_id", "unknown")
-
-            desc = getattr(video, "desc", "")
-            stats = getattr(video, "stats", None)
-
-            views = getattr(stats, "play_count", 0)
-            likes = getattr(stats, "digg_count", 0)
-
-            ct = getattr(video, "create_time", 0)
-            if ct > 1e10:
-                ct /= 1000
-
-            return {
-                "id": str(vid),
-                "url": f"https://www.tiktok.com/@{username}/video/{vid}",
-                "description": desc,
-                "views": int(views),
-                "likes": int(likes),
-                "timestamp": int(ct),
-                "date": datetime.fromtimestamp(ct).strftime("%Y-%m-%d %H:%M:%S"),
-                "hashtags": ", ".join(self.extract_hashtags(desc)),
-                "author": username,
-            }
-
-        except Exception as e:
-            print(f"⚠ Ошибка convert: {e}")
-            return None
-
-    # ---------------------------
-    # СБОР ДАННЫХ
-    # ---------------------------
-    async def collect(self, query: str) -> List[Dict]:
-        await self.init()
-
-        raw = await self.search(query, limit=50)
-
-        # фильтр по дате
-        fresh = [v for v in raw if self.within_7_days(v["timestamp"])]
-
-        # уникальные
-        uniq = {v["id"]: v for v in fresh}.values()
-
-        # сортировка
-        final = sorted(uniq, key=lambda x: x["views"], reverse=True)
-
-        return list(final)
+# -------------------------------------
+#  ИНИЦИАЛИЗАЦИЯ API
+# -------------------------------------
+async def get_api():
+    """
+    Создаёт рабочую сессию TikTokApi (TikTokApi 7.x)
+    """
+    api = TikTokApi()
+    await api.create_sessions()
+    return api
 
 
-# ---------------------------------------------
-# ВЫЗОВ ИЗ FASTAPI
-# ---------------------------------------------
-def run_parser(query: str) -> List[Dict]:
-    """Синхронный интерфейс для FastAPI"""
-
-    parser = TikTokParser()
+# -------------------------------------
+#  ОБРАБОТКА ОДНОГО ВИДЕО
+# -------------------------------------
+def video_to_dict(video):
+    """Превращает TikTokApi объект видео в dict"""
 
     try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+        video_id = getattr(video, "id", "")
+        author = getattr(video, "author", None)
+        author_id = getattr(author, "unique_id", "unknown")
 
-        data = loop.run_until_complete(parser.collect(query))
+        url = f"https://www.tiktok.com/@{author_id}/video/{video_id}"
+        desc = getattr(video, "desc", "")
 
-        # привести hashtags к списку
-        for v in data:
-            if isinstance(v["hashtags"], str):
-                v["hashtags"] = [t.strip() for t in v["hashtags"].split(",") if t.strip()]
+        stats = getattr(video, "stats", None)
+        views = getattr(stats, "play_count", 0)
+        likes = getattr(stats, "digg_count", 0)
 
-        return data
+        ts = getattr(video, "create_time", 0)
+        if ts > 1e10:
+            ts = ts / 1000
+
+        date = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S") if ts else ""
+
+        return {
+            "id": str(video_id),
+            "url": url,
+            "description": desc,
+            "views": int(views),
+            "likes": int(likes),
+            "timestamp": int(ts),
+            "date": date,
+            "author": author_id,
+            "hashtags": []
+        }
+
+    except Exception:
+        return None
+
+
+# -------------------------------------
+#  ПОИСК ВИДЕО (ОФИЦИАЛЬНЫЙ МЕТОД TikTokApi 7.x)
+# -------------------------------------
+async def search_async(query: str, limit: int = 30) -> List[Dict]:
+    """
+    Асинхронный поиск видео TikTok (TikTokApi v7.x)
+    """
+    api = await get_api()
+
+    results = []
+
+    try:
+        videos = api.video.search(query=query, count=limit)
+
+        async for v in videos:
+            parsed = video_to_dict(v)
+            if parsed:
+                results.append(parsed)
+            if len(results) >= limit:
+                break
 
     except Exception as e:
-        print(f"❌ Ошибка run_parser: {e}")
-        return []
+        print("Ошибка поиска:", e)
 
+    return results
+
+
+# -------------------------------------
+#  СИНХРОННАЯ ОБОЛОЧКА ДЛЯ FASTAPI
+# -------------------------------------
+def run_parser(query: str) -> List[Dict]:
+    """
+    Синхронный вызов для FastAPI
+    """
+
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop = asyncio.get_event_loop()
+
+    try:
+        return loop.run_until_complete(search_async(query))
+    except Exception as e:
+        print("❌ Ошибка run_parser:", e)
+        return []
 
